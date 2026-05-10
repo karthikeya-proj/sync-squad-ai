@@ -1,0 +1,1407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYNC SQUAD - Team Fitness</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Teko:wght@300;500;700&family=Barlow:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+    <style>
+        :root {
+            --brand-rose: #f43f5e;
+            --brand-blue: #3b82f6;
+            --brand-dark: #020617;
+            --glass-bg: rgba(15, 23, 42, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+        body {
+            font-family: 'Barlow', sans-serif;
+            background-color: var(--brand-dark);
+            color: #fff;
+            overflow: hidden;
+            margin: 0; padding: 0;
+            background-image:
+                linear-gradient(rgba(59,130,246,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(59,130,246,0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+        .font-sport { font-family: 'Teko', sans-serif; text-transform: uppercase; }
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        /* Mirror webcam canvas only */
+        #output { transform: scaleX(-1); }
+        #demo-canvas {
+            transform: none;
+            background: linear-gradient(135deg,#0f172a,#1e293b);
+            border: 1px solid var(--brand-blue);
+            border-radius: 12px;
+        }
+        /* Analytics charts must NOT mirror */
+        #repRateChart, #syncChart { transform: none !important; }
+
+        .diff-btn { transition: all 0.2s ease; border: 1px solid transparent; }
+        .diff-btn:hover { border-color: rgba(255,255,255,0.3); transform: translateY(-2px); }
+        .diff-btn.selected { background: rgba(255,255,255,0.15); border-color:#fff; box-shadow:0 0 15px rgba(255,255,255,0.2); }
+        input::placeholder { color: #64748b; }
+        @keyframes scanline { 0%{transform:translateY(-100%)} 100%{transform:translateY(100%)} }
+        .scan-overlay::after {
+            content:""; position:absolute; top:0; left:0; right:0; height:5px;
+            background:rgba(59,130,246,0.3); filter:blur(3px);
+            animation:scanline 3s linear infinite; pointer-events:none;
+        }
+        ::-webkit-scrollbar{width:6px}
+        ::-webkit-scrollbar-track{background:#0f172a}
+        ::-webkit-scrollbar-thumb{background:#3b82f6;border-radius:3px}
+
+        /* Feedback pills */
+        .fb-good  { color:#4ade80; border-color: rgba(74,222,128,0.3); background:rgba(74,222,128,0.08); }
+        .fb-warn  { color:#facc15; border-color: rgba(250,204,21,0.3);  background:rgba(250,204,21,0.08);  }
+        .fb-bad   { color:#f87171; border-color: rgba(248,113,113,0.3); background:rgba(248,113,113,0.08); }
+
+        /* Rep flash animation */
+        @keyframes repFlash { 0%{opacity:1;transform:scale(1.3)} 100%{opacity:0;transform:scale(1.6) translateY(-20px)} }
+        .rep-flash { animation: repFlash 0.6s ease-out forwards; }
+
+        /* Player rep badges on canvas */
+        .player-badge { position:absolute; font-family:'Teko',sans-serif; font-size:1.1rem; padding:2px 10px; border-radius:6px; pointer-events:none; text-transform:uppercase; }
+    </style>
+</head>
+<body class="h-screen w-screen relative scan-overlay">
+
+<!-- WEBCAM LAYER -->
+<div id="canvas-container" class="absolute inset-0 flex items-center justify-center bg-black">
+    <video id="video" class="hidden" playsinline></video>
+    <canvas id="output" class="absolute top-0 left-0 w-full h-full object-cover opacity-90"></canvas>
+</div>
+
+<!-- LOBBY -->
+<div id="lobby-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/95 z-50 transition-opacity duration-500 backdrop-blur-md overflow-y-auto py-8">
+    <div class="text-center mb-6 shrink-0">
+        <h1 class="font-sport text-8xl md:text-9xl mb-0 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-rose-500 leading-none drop-shadow-lg">SYNC SQUAD</h1>
+        <p class="text-xl text-gray-400 font-light tracking-[0.4em] mt-2">TACTICAL FITNESS PROTOCOL</p>
+    </div>
+    <div class="glass-panel p-8 rounded-2xl max-w-xl w-full text-center relative shrink-0 border-t-4 border-t-blue-500">
+        <!-- Squad size -->
+        <div class="flex items-center justify-between mb-4 bg-slate-900/50 p-4 rounded-xl border border-white/5">
+            <span class="text-2xl font-sport text-gray-300">SQUAD SIZE</span>
+            <div class="flex items-center gap-4">
+                <button onclick="adjustTeam(-1)" class="w-12 h-12 rounded-lg bg-slate-800 hover:bg-rose-600 transition flex items-center justify-center text-2xl font-bold border border-white/10">-</button>
+                <span id="team-size-display" class="text-5xl font-sport text-white w-12 text-center">2</span>
+                <button onclick="adjustTeam(1)" class="w-12 h-12 rounded-lg bg-slate-800 hover:bg-blue-600 transition flex items-center justify-center text-2xl font-bold border border-white/10">+</button>
+            </div>
+        </div>
+        <!-- Difficulty -->
+        <div class="mb-6">
+            <div class="text-xs text-blue-400 uppercase tracking-widest mb-2 text-left font-bold">Select Difficulty Protocol</div>
+            <div class="grid grid-cols-3 gap-3">
+                <button onclick="setDifficulty('EASY')"   id="diff-easy" class="diff-btn glass-panel py-3 font-sport text-2xl text-green-400 tracking-wide">RECRUIT</button>
+                <button onclick="setDifficulty('MEDIUM')" id="diff-med"  class="diff-btn selected glass-panel py-3 font-sport text-2xl text-yellow-400 tracking-wide">VETERAN</button>
+                <button onclick="setDifficulty('HARD')"   id="diff-hard" class="diff-btn glass-panel py-3 font-sport text-2xl text-rose-500 tracking-wide">ELITE</button>
+            </div>
+        </div>
+        <!-- Player names -->
+        <div class="mb-6">
+            <div class="text-xs text-blue-400 uppercase tracking-widest mb-2 text-left font-bold">Operative ID (Stand Left → Right)</div>
+            <div id="player-inputs-container" class="grid grid-cols-2 gap-3"></div>
+        </div>
+        <!-- Preview -->
+        <div class="text-left mb-8">
+            <div class="text-xs text-gray-500 uppercase tracking-widest mb-2 font-bold">Mission Parameters</div>
+            <div id="exercise-preview-container" class="space-y-2 bg-slate-900/50 p-4 rounded-xl border border-white/5 min-h-[140px]"></div>
+        </div>
+        <button onclick="startGame()" id="start-btn" class="w-full py-5 bg-gradient-to-r from-blue-600 to-rose-600 text-white font-bold font-sport text-3xl tracking-widest rounded-xl hover:scale-[1.02] transition-transform shadow-[0_0_20px_rgba(59,130,246,0.4)] uppercase">Initiate Sync</button>
+        <p id="loading-msg" class="mt-4 text-xs text-blue-400 hidden animate-pulse font-mono">INITIALIZING NEURAL LINK...</p>
+    </div>
+</div>
+
+<!-- HUD (In-Game) -->
+<div id="game-hud" class="absolute inset-0 pointer-events-none hidden z-40">
+    <div class="absolute top-0 left-0 w-full p-4 md:p-8 flex justify-between items-start">
+        <!-- Level info -->
+        <div class="glass-panel px-6 py-4 rounded-xl flex flex-col min-w-[200px]">
+            <span class="text-[10px] text-gray-400 tracking-[0.2em] uppercase font-bold">Current Protocol</span>
+            <div class="flex items-baseline gap-3 mt-1">
+                <span class="text-6xl font-sport text-white leading-none" id="hud-level">1</span>
+                <span id="hud-exercise" class="text-2xl font-sport text-rose-400 uppercase leading-none">—</span>
+            </div>
+        </div>
+        <!-- Timer -->
+        <div class="absolute top-4 md:top-8 left-1/2 transform -translate-x-1/2 text-center">
+            <div class="glass-panel rounded-full w-28 h-28 flex flex-col items-center justify-center border-4 border-slate-800/50">
+                <div class="text-[10px] text-gray-400 uppercase tracking-widest font-bold">TIME</div>
+                <div id="hud-timer" class="text-6xl font-sport text-white leading-none mt-1">00</div>
+            </div>
+        </div>
+        <!-- Rep counter -->
+        <div class="glass-panel px-6 py-4 rounded-xl text-right min-w-[180px]">
+            <div class="text-[10px] text-gray-400 tracking-[0.2em] uppercase font-bold">Squad Reps</div>
+            <div class="text-6xl font-sport text-white leading-none mt-1">
+                <span id="hud-reps" class="text-blue-400">0</span>
+                <span class="text-gray-600 text-4xl mx-2">/</span>
+                <span id="hud-target">20</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================== -->
+    <!-- ANALYTICS DASHBOARD        -->
+    <!-- ========================== -->
+    <div id="analytics-dashboard" class="hidden flex-col gap-3 absolute top-36 right-4 w-[320px] z-50 pointer-events-auto">
+
+        <!-- Team Efficiency -->
+        <div class="glass-panel rounded-2xl p-4 border border-blue-500/20 shadow-[0_0_20px_rgba(59,130,246,0.2)]">
+            <div class="flex items-center justify-between mb-1">
+                <h3 class="text-sm font-sport text-blue-400 tracking-widest">TEAM EFFICIENCY</h3>
+                <span id="eff-value" class="text-3xl font-sport text-white">—</span>
+            </div>
+            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden mb-2">
+                <div id="eff-bar" class="h-full bg-gradient-to-r from-blue-500 to-cyan-400 transition-all duration-700 w-0"></div>
+            </div>
+            <!-- Per-player contribution bars -->
+            <div id="player-contrib-list" class="space-y-1 mt-2"></div>
+        </div>
+
+        <!-- Rep Rate Chart -->
+        <div class="glass-panel rounded-2xl p-4 border border-rose-500/20">
+            <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-sport text-rose-400 tracking-widest">REP RATE / 10s</h3>
+                <span id="rep-rate-value" class="text-2xl font-sport text-white">0</span>
+            </div>
+            <canvas id="repRateChart" height="80"></canvas>
+        </div>
+
+        <!-- Sync Score (real) -->
+        <div class="grid grid-cols-2 gap-3">
+            <div class="glass-panel rounded-xl p-3 border border-cyan-500/20 text-center">
+                <div class="text-[10px] text-gray-400 uppercase tracking-widest mb-1">Sync</div>
+                <div class="relative w-16 h-16 mx-auto">
+                    <svg class="w-16 h-16" style="transform:rotate(-90deg)">
+                        <circle cx="32" cy="32" r="26" stroke="#1e293b" stroke-width="6" fill="transparent"></circle>
+                        <circle id="sync-circle" cx="32" cy="32" r="26" stroke="#06b6d4" stroke-width="6" fill="transparent"
+                            stroke-dasharray="163" stroke-dashoffset="163" stroke-linecap="round"
+                            class="transition-all duration-600"></circle>
+                    </svg>
+                    <div id="sync-value" class="absolute inset-0 flex items-center justify-center text-sm font-bold text-white">—</div>
+                </div>
+            </div>
+
+            <!-- Posture (real) -->
+            <div class="glass-panel rounded-xl p-3 border border-green-500/20">
+                <div class="text-[10px] text-gray-400 uppercase tracking-widest mb-2">Posture</div>
+                <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div id="posture-bar" class="h-full bg-gradient-to-r from-green-400 to-blue-500 w-0 transition-all duration-500"></div>
+                </div>
+                <div id="posture-value" class="text-xl font-sport text-white mt-1">—</div>
+                <div id="posture-label" class="text-[10px] text-gray-500">computing...</div>
+            </div>
+        </div>
+
+        <!-- Improvement Feedback -->
+        <div class="glass-panel rounded-2xl p-4 border border-yellow-500/15">
+            <h3 class="text-sm font-sport text-yellow-400 tracking-widest mb-2">LIVE FEEDBACK</h3>
+            <div id="feedback-list" class="space-y-1 text-xs"></div>
+        </div>
+    </div>
+
+    <!-- Progress bar -->
+    <div class="absolute bottom-12 left-8 right-8 h-3 bg-slate-800 rounded-full overflow-hidden border border-white/10">
+        <div id="progress-fill" class="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-rose-500 w-0 transition-all duration-300 shadow-[0_0_15px_rgba(59,130,246,0.8)]"></div>
+    </div>
+
+    <!-- Transition Overlay -->
+    <div id="overlay-msg" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/95 hidden z-50 backdrop-blur-xl">
+        <h1 id="overlay-title" class="text-8xl font-sport text-transparent bg-clip-text bg-gradient-to-b from-white to-gray-400 mb-8 drop-shadow-lg">PHASE</h1>
+        <div class="flex flex-col md:flex-row items-center gap-10 bg-slate-900/50 p-8 rounded-2xl border border-white/10 max-w-5xl w-full mx-6 shadow-2xl">
+            <div class="flex-shrink-0 relative">
+                <canvas id="demo-canvas" width="240" height="240"></canvas>
+                <div class="absolute -bottom-3 left-1/2 transform -translate-x-1/2 bg-black/80 text-blue-400 text-[10px] px-3 py-1 rounded-full uppercase tracking-widest border border-blue-500/30 font-bold">Holo-Guide</div>
+            </div>
+            <div class="flex-1 text-center md:text-left space-y-6">
+                <div class="flex flex-col gap-2">
+                    <div id="overlay-difficulty" class="self-center md:self-start inline-block px-3 py-1 text-white font-bold text-xs bg-yellow-500 shadow-lg tracking-widest rounded">MEDIUM INTENSITY</div>
+                    <p id="overlay-sub" class="text-4xl text-white font-sport tracking-wide">ALL PLAYERS READY</p>
+                </div>
+                <div class="h-px w-full bg-gradient-to-r from-blue-500 to-transparent"></div>
+                <p id="overlay-instruction" class="text-gray-300 text-2xl font-light leading-relaxed">Get ready.</p>
+            </div>
+            <div class="flex-shrink-0 w-32 h-32 flex items-center justify-center rounded-full border-4 border-slate-800 relative bg-black/40">
+                <div id="countdown" class="text-7xl font-sport text-white relative z-10">5</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- SUMMARY -->
+<div id="summary-screen" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 z-50 hidden overflow-y-auto py-10">
+    <div class="w-full max-w-6xl p-6">
+        <h1 class="font-sport text-7xl text-white mb-8 tracking-widest border-b-2 border-rose-500/50 pb-4 text-center">MISSION DEBRIEF</h1>
+        <div class="flex flex-col lg:flex-row gap-8">
+            <div class="w-full lg:w-1/3 glass-panel p-6 rounded-2xl h-fit">
+                <h2 class="text-2xl font-sport text-blue-400 mb-6 border-b border-white/10 pb-2">Phase Timeline</h2>
+                <div id="timeline-grid" class="space-y-4"></div>
+            </div>
+            <div class="w-full lg:w-2/3 flex flex-col gap-6">
+                <div id="stats-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                <div class="flex gap-4">
+                    <div class="glass-panel p-6 rounded-2xl flex-1 text-center border-t-4 border-green-500">
+                        <h3 class="text-xs text-gray-400 mb-2 uppercase tracking-widest font-bold">Total Squad Reps</h3>
+                        <div class="text-7xl font-sport text-white" id="total-score">0</div>
+                    </div>
+                    <div class="glass-panel p-6 rounded-2xl flex-1 text-center border-t-4 border-blue-500">
+                        <h3 class="text-xs text-gray-400 mb-2 uppercase tracking-widest font-bold">Avg Team Efficiency</h3>
+                        <div class="text-7xl font-sport text-white" id="final-efficiency">—</div>
+                    </div>
+                </div>
+                <!-- Session improvement report -->
+                <div class="glass-panel p-6 rounded-2xl border border-yellow-500/20">
+                    <h3 class="text-xl font-sport text-yellow-400 mb-4 tracking-widest">WHAT TO IMPROVE</h3>
+                    <div id="summary-feedback" class="space-y-2 text-sm"></div>
+                </div>
+            </div>
+        </div>
+        <div class="text-center mt-10">
+            <button onclick="location.reload()" class="px-12 py-4 bg-white text-slate-900 hover:bg-rose-500 hover:text-white font-sport text-2xl rounded-xl transition-all shadow-xl uppercase font-bold tracking-wider">New Mission</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// =============================================================================
+// CONFIG & EXERCISE DATABASE
+// =============================================================================
+const CONFIG = {
+    teamSize: 2, minTeam: 2, maxTeam: 4,
+    difficulty: 'MEDIUM',
+    width: 640, height: 480,
+    transitionTime: 6,
+    // Rep debounce: minimum ms between two counted reps per player
+    REP_DEBOUNCE_MS: 350,
+    // Minimum pose score to process a player
+    POSE_CONFIDENCE: 0.30,
+    // Minimum joint confidence to use a keypoint
+    JOINT_CONFIDENCE: 0.25,
+};
+
+const EXERCISE_DB = {
+    // RECRUIT
+    SIDEBEND:  { name:'Side Bends',      diff:'RECRUIT', timeLimit:30, desc:'Lean torso left then right using obliques.' },
+    WINGS:     { name:'Lateral Raises',  diff:'RECRUIT', timeLimit:30, desc:'Lift arms out to sides until shoulder height.' },
+    T_CLAPS:   { name:'T-Claps',         diff:'RECRUIT', timeLimit:30, desc:'Arms wide (T-Pose), clap hands in front.' },
+    WIDE_REACH:{ name:'Wide Reach',      diff:'RECRUIT', timeLimit:30, desc:'Feet wide. Reach hips → clap overhead.' },
+    // VETERAN
+    HIGH_KNEES:{ name:'High Knees',      diff:'VETERAN', timeLimit:35, desc:'Run in place — lift knees to waist height.' },
+    BOXING:    { name:'Shadow Boxing',   diff:'VETERAN', timeLimit:35, desc:'Punch across body. Left→right, right→left.' },
+    CRUNCHES:  { name:'Elbow-to-Knee',   diff:'VETERAN', timeLimit:40, desc:'Bring right elbow down to left knee.' },
+    KNEE_SMASH:{ name:'Knee Smashes',    diff:'VETERAN', timeLimit:35, desc:'Reach hands high, pull down to meet knee.' },
+    // ELITE
+    SQUATS:    { name:'Power Squats',    diff:'ELITE',   timeLimit:45, desc:'Lower hips until knees at 90°, back straight.' },
+    LEG_LIFTS: { name:'Side Leg Lifts',  diff:'ELITE',   timeLimit:40, desc:'Balance on one leg, lift the other to side.' },
+    TOE_TOUCHES:{ name:'Toe Touches',    diff:'ELITE',   timeLimit:40, desc:'Legs wide, bend to touch toes, stand tall.' },
+    CLIMBERS:  { name:'Standing Climbers',diff:'ELITE',  timeLimit:45, desc:'Opposite hand-high + knee-up. Alternate fast.' },
+    // FINALES
+    FINALE_JACKS:  { name:'Jumping Jacks', diff:'FINALE', timeLimit:45, desc:'SQUAD FINALE: Jumping Jacks in sync!' },
+    FINALE_SPRINT: { name:'Sprint Punch',  diff:'FINALE', timeLimit:50, desc:'SQUAD FINALE: Fast punches while running in place!' },
+    FINALE_SKY:    { name:'Sky Reach',     diff:'FINALE', timeLimit:60, desc:'SQUAD FINALE: Explosive overhead presses in formation!' },
+};
+
+const POOLS = {
+    EASY:   { levels:['SIDEBEND','WINGS','T_CLAPS','WIDE_REACH'],      finale:'FINALE_JACKS'  },
+    MEDIUM: { levels:['HIGH_KNEES','BOXING','CRUNCHES','KNEE_SMASH'],  finale:'FINALE_SPRINT' },
+    HARD:   { levels:['SQUATS','LEG_LIFTS','TOE_TOUCHES','CLIMBERS'],  finale:'FINALE_SKY'    },
+};
+
+// =============================================================================
+// STATE
+// =============================================================================
+const STATE = {
+    status: 'LOBBY',
+    level: 1, levelIndex: 0,
+    reps: 0, targetReps: 0,
+    poses: [],
+    levelsConfig: [], currentLevelData: null,
+    // Per player: { name, state:'START'|'MID', lastRepTime, reps, repTimestamps[] }
+    playerStates: [],
+    sessionStats: [],   // accumulates across levels
+    levelStartTime: 0,
+    totalTeamReps: 0,
+
+    // Analytics rolling windows (updated every analytics tick)
+    analytics: {
+        // rep timestamps per player per level for rate calculation
+        repBuckets: [],     // array of counts per 10s bucket (last 6 → 60s)
+        lastBucketTime: 0,
+        currentBucketReps: 0,
+
+        // Per-tick history for summary
+        efficiencyHistory: [],   // 0-100
+        syncHistory: [],         // 0-100
+        postureHistory: [],      // 0-100
+        feedbackLog: [],         // { ts, messages[] }
+    }
+};
+
+let detector, video, canvas, ctx, animationFrameId, demoCtx, demoAnimId, audioCtx;
+let repRateChart;
+
+// Keypoint index map
+const KP = {
+    NOSE:0, L_EYE:1, R_EYE:2, L_EAR:3, R_EAR:4,
+    L_SHOULDER:5, R_SHOULDER:6, L_ELBOW:7, R_ELBOW:8,
+    L_WRIST:9, R_WRIST:10, L_HIP:11, R_HIP:12,
+    L_KNEE:13, R_KNEE:14, L_ANKLE:15, R_ANKLE:16,
+};
+
+// =============================================================================
+// UI LOBBY
+// =============================================================================
+window.onload = () => { renderNameInputs(); renderExercisePreview(); };
+
+function adjustTeam(d) {
+    CONFIG.teamSize = Math.max(CONFIG.minTeam, Math.min(CONFIG.maxTeam, CONFIG.teamSize + d));
+    document.getElementById('team-size-display').innerText = CONFIG.teamSize;
+    renderNameInputs(); renderExercisePreview();
+}
+
+function setDifficulty(level) {
+    CONFIG.difficulty = level;
+    document.querySelectorAll('.diff-btn').forEach(b => b.classList.remove('selected'));
+    document.getElementById({EASY:'diff-easy',MEDIUM:'diff-med',HARD:'diff-hard'}[level]).classList.add('selected');
+    renderExercisePreview();
+}
+
+function renderNameInputs() {
+    const c = document.getElementById('player-inputs-container');
+    c.innerHTML = '';
+    const labels2=['LEFT','RIGHT'], labels3=['LEFT','CENTER','RIGHT'],
+          labels4=['FAR LEFT','MID LEFT','MID RIGHT','FAR RIGHT'];
+    const labels = CONFIG.teamSize===2 ? labels2 : CONFIG.teamSize===3 ? labels3 : labels4;
+    for(let i=1; i<=CONFIG.teamSize; i++) {
+        const d = document.createElement('div');
+        d.innerHTML = `<input type="text" id="p${i}-name" placeholder="OP-${i}" maxlength="10"
+            class="w-full bg-slate-800/50 border-b-2 border-slate-600 text-white font-sport text-xl p-2 text-center
+            focus:outline-none focus:border-rose-500 placeholder-slate-600 uppercase rounded-t tracking-wider">
+            <div class="text-[10px] text-blue-400 bg-slate-900/80 text-center py-1 rounded-b font-mono uppercase tracking-widest font-bold">${labels[i-1]}</div>`;
+        c.appendChild(d);
+    }
+}
+
+function renderExercisePreview() {
+    const c = document.getElementById('exercise-preview-container');
+    c.innerHTML = '';
+    const pool = POOLS[CONFIG.difficulty];
+    for(let i=0; i<CONFIG.teamSize; i++) {
+        const meta = EXERCISE_DB[pool.levels[i % pool.levels.length]];
+        const d = document.createElement('div');
+        d.className = 'flex items-center gap-3 border-b border-white/5 pb-2 last:border-0';
+        d.innerHTML = `<span class="text-rose-500 font-sport text-xl w-6">0${i+1}</span>
+            <span class="text-gray-300 font-bold">${meta.name}</span>
+            <span class="ml-auto text-[10px] bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded border border-blue-500/30">ALL SQUAD</span>`;
+        c.appendChild(d);
+    }
+    const fm = EXERCISE_DB[pool.finale];
+    const fd = document.createElement('div');
+    fd.className = 'mt-2 pt-2 border-t border-white/10 flex items-center gap-3';
+    fd.innerHTML = `<span class="text-blue-400 font-sport text-xl w-6">FN</span>
+        <span class="text-white font-bold tracking-wide">${fm.name}</span>
+        <span class="ml-auto text-[10px] bg-rose-900/50 text-rose-300 px-2 py-0.5 rounded border border-rose-500/30">FINALE</span>`;
+    c.appendChild(fd);
+}
+
+// =============================================================================
+// GAME START
+// =============================================================================
+async function startGame() {
+    const btn = document.getElementById('start-btn');
+    btn.disabled = true; btn.classList.add('opacity-50');
+    document.getElementById('loading-msg').classList.remove('hidden');
+
+    try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if(audioCtx.state === 'suspended') await audioCtx.resume();
+    } catch(e) { console.warn('Audio init failed', e); }
+
+    try {
+        await initCamera();
+        await createDetector();
+
+        // Build sessionStats per player
+        STATE.sessionStats = [];
+        for(let i=0; i<CONFIG.teamSize; i++) {
+            const el = document.getElementById(`p${i+1}-name`);
+            const name = el && el.value.trim() ? el.value.trim().toUpperCase() : `OP-${i+1}`;
+            STATE.sessionStats.push({ id:i+1, name, totalReps:0, levelReps:[] });
+        }
+
+        // Build levels
+        STATE.levelsConfig = [];
+        STATE.totalTeamReps = 0;
+        const pool = POOLS[CONFIG.difficulty];
+        for(let i=0; i<CONFIG.teamSize; i++) {
+            const exKey = pool.levels[i % pool.levels.length];
+            STATE.levelsConfig.push({ id:i+1, exKey, meta:EXERCISE_DB[exKey], target:CONFIG.teamSize*10, duration:0 });
+        }
+        STATE.levelsConfig.push({ id:CONFIG.teamSize+1, exKey:pool.finale, meta:EXERCISE_DB[pool.finale], target:CONFIG.teamSize*15, duration:0 });
+
+        // Reset analytics
+        STATE.analytics = {
+            repBuckets:[], lastBucketTime:0, currentBucketReps:0,
+            efficiencyHistory:[], syncHistory:[], postureHistory:[], feedbackLog:[],
+        };
+
+        document.getElementById('lobby-screen').classList.add('opacity-0');
+        setTimeout(() => {
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('game-hud').classList.remove('hidden');
+            const dash = document.getElementById('analytics-dashboard');
+            dash.classList.remove('hidden'); dash.classList.add('flex');
+            demoCtx = document.getElementById('demo-canvas').getContext('2d');
+            initAnalyticsCharts();
+            startAnalyticsTick();
+            startLevel(0);
+        }, 500);
+    } catch(err) {
+        console.error(err);
+        alert('Camera access denied or not available. Ensure HTTPS and camera permissions.');
+        btn.disabled = false;
+    }
+}
+
+async function initCamera() {
+    video = document.getElementById('video');
+    canvas = document.getElementById('output');
+    ctx = canvas.getContext('2d');
+    const stream = await navigator.mediaDevices.getUserMedia({ video:{ width:CONFIG.width, height:CONFIG.height, facingMode:'user' }, audio:false });
+    video.srcObject = stream;
+    return new Promise(resolve => {
+        video.onloadedmetadata = () => {
+            video.play();
+            video.width = CONFIG.width; video.height = CONFIG.height;
+            canvas.width = CONFIG.width; canvas.height = CONFIG.height;
+            resolve();
+        };
+    });
+}
+
+async function createDetector() {
+    detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING, enableTracking:true, trackerType:poseDetection.TrackerType.BoundingBox }
+    );
+}
+
+// =============================================================================
+// LEVEL FLOW
+// =============================================================================
+function startLevel(lvlIndex) {
+    STATE.levelIndex = lvlIndex;
+    STATE.level = lvlIndex + 1;
+    STATE.currentLevelData = STATE.levelsConfig[lvlIndex];
+    STATE.reps = 0;
+    STATE.targetReps = STATE.currentLevelData.target;
+    STATE.status = 'TRANSITION';
+
+    // Reset per-player state for this level
+    STATE.playerStates = Array.from({length:CONFIG.teamSize}, () => ({
+        state: 'START',
+        lastRepTime: 0,
+        reps: 0,
+        repTimestamps: [],   // used for rate analysis
+    }));
+
+    // Analytics bucket reset per level
+    STATE.analytics.currentBucketReps = 0;
+    STATE.analytics.lastBucketTime = Date.now();
+    STATE.analytics.repBuckets = [];
+
+    updateHUD();
+    const isFinale = lvlIndex === STATE.levelsConfig.length - 1;
+    const meta = STATE.currentLevelData.meta;
+
+    // Show overlay
+    document.getElementById('overlay-title').innerText = isFinale ? 'FINALE' : `PHASE 0${STATE.level}`;
+    document.getElementById('overlay-sub').innerText = meta.name;
+    document.getElementById('overlay-instruction').innerText = meta.desc;
+    const diffEl = document.getElementById('overlay-difficulty');
+    diffEl.innerText = `${meta.diff} INTENSITY`;
+    diffEl.className = `self-center md:self-start inline-block px-3 py-1 text-white font-bold text-xs rounded shadow-lg tracking-widest ` +
+        (meta.diff==='ELITE'||meta.diff==='FINALE' ? 'bg-rose-600' : meta.diff==='VETERAN' ? 'bg-yellow-500' : 'bg-green-500');
+
+    document.getElementById('overlay-msg').classList.remove('hidden');
+    speak(`${isFinale ? 'Final Mission' : 'Phase '+STATE.level}. ${meta.name}.`);
+    startDemoAnimation(STATE.currentLevelData.exKey);
+
+    let count = CONFIG.transitionTime;
+    document.getElementById('countdown').innerText = count;
+    const timer = setInterval(() => {
+        count--;
+        document.getElementById('countdown').innerText = count;
+        if(count <= 0) {
+            clearInterval(timer);
+            cancelAnimationFrame(demoAnimId);
+            document.getElementById('overlay-msg').classList.add('hidden');
+            STATE.status = 'PLAYING';
+            STATE.levelStartTime = Date.now();
+            gameLoop();
+        }
+    }, 1000);
+}
+
+async function gameLoop() {
+    if(STATE.status !== 'PLAYING') return;
+
+    // Timer
+    const elapsed = (Date.now() - STATE.levelStartTime) / 1000;
+    const remaining = Math.max(0, Math.ceil(STATE.currentLevelData.meta.timeLimit - elapsed));
+    const tEl = document.getElementById('hud-timer');
+    tEl.innerText = remaining;
+    tEl.classList.toggle('text-rose-500', remaining <= 10);
+
+    if(remaining <= 0) {
+        playSound('fail');
+        levelComplete();
+        return;
+    }
+
+    // Pose estimation
+    const poses = await detector.estimatePoses(video, { maxPoses:CONFIG.teamSize, flipHorizontal:false });
+    STATE.poses = poses;
+
+    // Draw
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    processReps(poses);
+    drawSkeleton(poses);
+
+    if(STATE.reps >= STATE.targetReps) {
+        levelComplete();
+    } else {
+        animationFrameId = requestAnimationFrame(gameLoop);
+    }
+}
+
+function levelComplete() {
+    if(STATE.status === 'FINISHED') return;
+    STATE.status = 'FINISHED';
+    STATE.currentLevelData.duration = (Date.now() - STATE.levelStartTime) / 1000;
+    // Save per-player reps for this level
+    STATE.sessionStats.forEach((s, i) => {
+        s.levelReps.push(STATE.playerStates[i] ? STATE.playerStates[i].reps : 0);
+    });
+    speak('Phase Complete!');
+    if(STATE.levelIndex < STATE.levelsConfig.length - 1) {
+        setTimeout(() => startLevel(STATE.levelIndex + 1), 2000);
+    } else {
+        showSummary();
+    }
+}
+
+// =============================================================================
+// ACCURATE REP COUNTING
+// =============================================================================
+// Key design:
+//  - All thresholds are NORMALIZED by body scale (hip-to-shoulder distance)
+//    so they work regardless of how close/far the person is from the camera.
+//  - Each joint used is checked for minimum confidence before being used.
+//  - State machine: START → MID → START (one full rep = one cycle through)
+//  - Debounce prevents double-counting.
+
+function bodyScale(k) {
+    // Returns the pixel distance from hips to shoulders as a scale reference.
+    // Falls back to a safe default if keypoints are low confidence.
+    const ls = k[KP.L_SHOULDER], rs = k[KP.R_SHOULDER];
+    const lh = k[KP.L_HIP],      rh = k[KP.R_HIP];
+    if(!ls||!rs||!lh||!rh) return 200;
+    if(ls.score<CONFIG.JOINT_CONFIDENCE||rs.score<CONFIG.JOINT_CONFIDENCE||
+       lh.score<CONFIG.JOINT_CONFIDENCE||rh.score<CONFIG.JOINT_CONFIDENCE) return 200;
+    const shoulderMidY = (ls.y + rs.y) / 2;
+    const hipMidY      = (lh.y + rh.y) / 2;
+    return Math.max(80, Math.abs(hipMidY - shoulderMidY));
+}
+
+function kpOK(kp) {
+    return kp && kp.score >= CONFIG.JOINT_CONFIDENCE;
+}
+
+// Returns true if a full rep was completed for player at idx.
+// Uses normalized thresholds (ratios of bodyScale).
+function detectRep(idx, exKey, k, scale) {
+    const s = STATE.playerStates[idx];
+    const now = Date.now();
+
+    // Helper to commit a rep (debounced)
+    const commitRep = () => {
+        if(now - s.lastRepTime < CONFIG.REP_DEBOUNCE_MS) return false;
+        s.state = 'START';
+        s.lastRepTime = now;
+        s.reps++;
+        s.repTimestamps.push(now);
+        return true;
+    };
+
+    const ls=k[KP.L_SHOULDER], rs=k[KP.R_SHOULDER];
+    const lw=k[KP.L_WRIST],    rw=k[KP.R_WRIST];
+    const le=k[KP.L_ELBOW],    re=k[KP.R_ELBOW];
+    const lh=k[KP.L_HIP],      rh=k[KP.R_HIP];
+    const lk=k[KP.L_KNEE],     rk=k[KP.R_KNEE];
+    const la=k[KP.L_ANKLE],    ra=k[KP.R_ANKLE];
+    const nose=k[KP.NOSE];
+
+    // Shoulder and hip midpoints (used by many exercises)
+    const shoulderMidX = kpOK(ls)&&kpOK(rs) ? (ls.x+rs.x)/2 : null;
+    const shoulderMidY = kpOK(ls)&&kpOK(rs) ? (ls.y+rs.y)/2 : null;
+    const hipMidY      = kpOK(lh)&&kpOK(rh) ? (lh.y+rh.y)/2 : null;
+
+    switch(exKey) {
+
+        // ── JUMPING JACKS / FINALE_JACKS ───────────────────────────────────
+        // UP: both wrists above ears (relative to shoulder height)
+        // DOWN: both wrists below shoulders
+        case 'FINALE_JACKS': {
+            if(!kpOK(lw)||!kpOK(rw)||!kpOK(ls)||!kpOK(rs)) return false;
+            const lEar=k[KP.L_EAR], rEar=k[KP.R_EAR];
+            const refY = kpOK(lEar)&&kpOK(rEar) ? (lEar.y+rEar.y)/2 : shoulderMidY - scale*0.3;
+            const handsUp   = lw.y < refY && rw.y < refY;
+            const handsDown = lw.y > shoulderMidY + scale*0.1 && rw.y > shoulderMidY + scale*0.1;
+            if(s.state==='START' && handsUp)  { s.state='MID'; }
+            if(s.state==='MID'   && handsDown){ return commitRep(); }
+            return false;
+        }
+
+        // ── SIDE BENDS ──────────────────────────────────────────────────────
+        // Count one bend to either side.
+        // Detected by: shoulder tilt > 15% of scale
+        case 'SIDEBEND': {
+            if(!kpOK(ls)||!kpOK(rs)) return false;
+            const tilt = Math.abs(ls.y - rs.y) / scale; // normalized tilt
+            if(s.state==='START' && tilt > 0.18) { s.state='MID'; s.lastDir = ls.y>rs.y ? 'L':'R'; }
+            if(s.state==='MID' && tilt < 0.06)   { return commitRep(); }
+            return false;
+        }
+
+        // ── LATERAL RAISES (WINGS) ──────────────────────────────────────────
+        // UP: wrists near shoulder height (within 20% scale)
+        // DOWN: wrists below hips level
+        case 'WINGS': {
+            if(!kpOK(lw)||!kpOK(rw)||!kpOK(ls)||!kpOK(rs)) return false;
+            const lwRelY = (lw.y - ls.y) / scale;  // negative = above shoulder
+            const rwRelY = (rw.y - rs.y) / scale;
+            const handsAtShoulder = lwRelY > -0.15 && lwRelY < 0.2 && rwRelY > -0.15 && rwRelY < 0.2;
+            const handsLow = lw.y > (hipMidY ?? ls.y+scale) && rw.y > (hipMidY ?? rs.y+scale);
+            if(s.state==='START' && handsAtShoulder) { s.state='MID'; }
+            if(s.state==='MID'   && handsLow)         { return commitRep(); }
+            return false;
+        }
+
+        // ── T-CLAPS ─────────────────────────────────────────────────────────
+        // WIDE: horizontal wrist distance > 80% scale
+        // CLAP: horizontal wrist distance < 15% scale
+        case 'T_CLAPS': {
+            if(!kpOK(lw)||!kpOK(rw)) return false;
+            const hDist = Math.abs(lw.x - rw.x) / scale;
+            if(s.state==='START' && hDist < 0.15) { s.state='MID'; }
+            if(s.state==='MID'   && hDist > 0.80) { return commitRep(); }
+            return false;
+        }
+
+        // ── WIDE REACH ──────────────────────────────────────────────────────
+        // DOWN: wrists near hips
+        // UP: wrists above nose/top of head
+        case 'WIDE_REACH': {
+            if(!kpOK(lw)||!kpOK(rw)||!kpOK(lh)||!kpOK(rh)) return false;
+            const handsHigh = kpOK(nose) ? (lw.y < nose.y && rw.y < nose.y) : (shoulderMidY && lw.y < shoulderMidY - scale*0.3 && rw.y < shoulderMidY - scale*0.3);
+            const handsLow  = lw.y > hipMidY - scale*0.1 && rw.y > hipMidY - scale*0.1;
+            if(s.state==='START' && handsHigh) { s.state='MID'; }
+            if(s.state==='MID'   && handsLow)  { return commitRep(); }
+            return false;
+        }
+
+        // ── HIGH KNEES ──────────────────────────────────────────────────────
+        // Alternate knees: knee Y above hip Y.
+        // Each time EITHER knee crosses above the hip midpoint → rep.
+        // Use lastSide to avoid double-counting same knee twice.
+        case 'HIGH_KNEES': {
+            if(!kpOK(lk)||!kpOK(rk)||!kpOK(lh)||!kpOK(rh)) return false;
+            const lKneeUp = lk.y < hipMidY - scale*0.05;
+            const rKneeUp = rk.y < hipMidY - scale*0.05;
+            const noKneeUp = !lKneeUp && !rKneeUp;
+            const curSide = lKneeUp ? 'L' : rKneeUp ? 'R' : null;
+            if(s.state==='START' && curSide && curSide !== s.lastSide) {
+                s.state='MID'; s.pendingSide=curSide;
+            }
+            if(s.state==='MID' && noKneeUp) {
+                s.lastSide = s.pendingSide;
+                return commitRep();
+            }
+            return false;
+        }
+
+        // ── SHADOW BOXING / FINALE_SPRINT ───────────────────────────────────
+        // Punch: one wrist crosses body midline horizontally
+        // Each alternating punch = 1 rep
+        case 'BOXING':
+        case 'FINALE_SPRINT': {
+            if(!kpOK(lw)||!kpOK(rw)||shoulderMidX===null) return false;
+            // Left wrist punches right: lw.x > shoulderMidX + 15% scale
+            // Right wrist punches left: rw.x < shoulderMidX - 15% scale
+            // (In raw frame coords, left/right are swapped due to mirror)
+            const lPunch = lw.x < shoulderMidX - scale*0.15;
+            const rPunch = rw.x > shoulderMidX + scale*0.15;
+            const anyPunch = lPunch || rPunch;
+            const noPunch  = !lPunch && !rPunch;
+            if(s.state==='START' && anyPunch) { s.state='MID'; }
+            if(s.state==='MID'   && noPunch)  { return commitRep(); }
+            return false;
+        }
+
+        // ── ELBOW-TO-KNEE (CRUNCHES) ────────────────────────────────────────
+        // Left elbow near right knee OR right elbow near left knee
+        // Distance < 30% scale
+        case 'CRUNCHES': {
+            if(!kpOK(le)||!kpOK(re)||!kpOK(lk)||!kpOK(rk)) return false;
+            const d1 = Math.hypot(le.x-rk.x, le.y-rk.y) / scale; // L elbow ↔ R knee
+            const d2 = Math.hypot(re.x-lk.x, re.y-lk.y) / scale; // R elbow ↔ L knee
+            const touch = d1 < 0.30 || d2 < 0.30;
+            const apart = d1 > 0.60 && d2 > 0.60;
+            if(s.state==='START' && touch) { s.state='MID'; }
+            if(s.state==='MID'   && apart) { return commitRep(); }
+            return false;
+        }
+
+        // ── KNEE SMASHES ────────────────────────────────────────────────────
+        // Hands go from overhead → meet knee midpoint (< 35% scale distance)
+        case 'KNEE_SMASH': {
+            if(!kpOK(lw)||!kpOK(rw)||!kpOK(lk)||!kpOK(rk)) return false;
+            const kneeAvgY = (lk.y + rk.y) / 2;
+            const handAvgY = (lw.y + rw.y) / 2;
+            const handAvgX = (lw.x + rw.x) / 2;
+            const kneeAvgX = (lk.x + rk.x) / 2;
+            const dist = Math.hypot(handAvgX-kneeAvgX, handAvgY-kneeAvgY) / scale;
+            const overhead = kpOK(nose) ? handAvgY < nose.y : (shoulderMidY && handAvgY < shoulderMidY - scale*0.3);
+            if(s.state==='START' && overhead) { s.state='MID'; }
+            if(s.state==='MID'   && dist < 0.35) { return commitRep(); }
+            return false;
+        }
+
+        // ── POWER SQUATS ────────────────────────────────────────────────────
+        // DOWN: knee Y close to hip Y (< 25% scale difference)
+        // UP: knee Y well below hip Y (> 60% scale below)
+        case 'SQUATS': {
+            if(!kpOK(lk)||!kpOK(rk)||!kpOK(lh)||!kpOK(rh)) return false;
+            const kneeAvgY = (lk.y + rk.y) / 2;
+            const relDist  = (kneeAvgY - hipMidY) / scale; // normalized distance knee below hip
+            const down = relDist < 0.30;  // knees close to hips = low squat
+            const up   = relDist > 0.65;  // knees far below hips = standing
+            if(s.state==='START' && down) { s.state='MID'; }
+            if(s.state==='MID'   && up)   { return commitRep(); }
+            return false;
+        }
+
+        // ── SIDE LEG LIFTS ──────────────────────────────────────────────────
+        // One ankle lifts to the side: ankle Y difference > 25% scale
+        case 'LEG_LIFTS': {
+            if(!kpOK(la)||!kpOK(ra)) return false;
+            const ankleYDiff = Math.abs(la.y - ra.y) / scale;
+            if(s.state==='START' && ankleYDiff > 0.25) { s.state='MID'; }
+            if(s.state==='MID'   && ankleYDiff < 0.08) { return commitRep(); }
+            return false;
+        }
+
+        // ── TOE TOUCHES ─────────────────────────────────────────────────────
+        // DOWN: wrist Y below hip Y + 50% scale (touching floor level)
+        // UP: wrist Y above hip Y
+        case 'TOE_TOUCHES': {
+            if(!kpOK(lw)||!kpOK(rw)||hipMidY===null) return false;
+            const handAvgY = (lw.y + rw.y) / 2;
+            const down = handAvgY > hipMidY + scale * 0.5;
+            const up   = handAvgY < hipMidY - scale * 0.1;
+            if(s.state==='START' && down) { s.state='MID'; }
+            if(s.state==='MID'   && up)   { return commitRep(); }
+            return false;
+        }
+
+        // ── STANDING CLIMBERS ───────────────────────────────────────────────
+        // One hand up above head + opposite knee lifted above hip
+        case 'CLIMBERS': {
+            if(!kpOK(lw)||!kpOK(rw)||!kpOK(lk)||!kpOK(rk)||shoulderMidY===null||hipMidY===null) return false;
+            const lHandUp  = lw.y < shoulderMidY - scale*0.3;
+            const rHandUp  = rw.y < shoulderMidY - scale*0.3;
+            const lKneeUp2 = lk.y < hipMidY;
+            const rKneeUp2 = rk.y < hipMidY;
+            const active = (lHandUp && rKneeUp2) || (rHandUp && lKneeUp2);
+            const neutral = !lHandUp && !rHandUp;
+            if(s.state==='START' && active)  { s.state='MID'; }
+            if(s.state==='MID'   && neutral) { return commitRep(); }
+            return false;
+        }
+
+        // ── SKY REACH / FINALE_SKY ──────────────────────────────────────────
+        // UP: both wrists above head (above nose - 30% scale)
+        // DOWN: wrists below shoulders
+        case 'SKY_REACH':
+        case 'FINALE_SKY': {
+            if(!kpOK(lw)||!kpOK(rw)||shoulderMidY===null) return false;
+            const topRef  = kpOK(nose) ? nose.y - scale*0.3 : shoulderMidY - scale*0.6;
+            const handsUp   = lw.y < topRef && rw.y < topRef;
+            const handsDown = lw.y > shoulderMidY+scale*0.1 && rw.y > shoulderMidY+scale*0.1;
+            if(s.state==='START' && handsUp)   { s.state='MID'; }
+            if(s.state==='MID'   && handsDown) { return commitRep(); }
+            return false;
+        }
+
+        default: return false;
+    }
+}
+
+function processReps(poses) {
+    // Sort poses descending by nose.x so index 0 = visual LEFT player (highest raw x in mirrored frame)
+    poses.sort((a, b) => b.keypoints[KP.NOSE].x - a.keypoints[KP.NOSE].x);
+
+    const exKey = STATE.currentLevelData.exKey;
+
+    poses.forEach((pose, idx) => {
+        if(pose.score < CONFIG.POSE_CONFIDENCE || idx >= CONFIG.teamSize) return;
+        const k = pose.keypoints;
+        const scale = bodyScale(k);
+        const isRep = detectRep(idx, exKey, k, scale);
+        if(isRep) {
+            STATE.reps++;
+            STATE.totalTeamReps++;
+            if(STATE.sessionStats[idx]) STATE.sessionStats[idx].totalReps++;
+            STATE.analytics.currentBucketReps++;
+            playSound('beep');
+            updateHUD();
+        }
+    });
+}
+
+// =============================================================================
+// REAL ANALYTICS — No dummy values
+// =============================================================================
+function computeRealMetrics() {
+    const poses = STATE.poses;
+    const n = CONFIG.teamSize;
+
+    // ── Posture ─────────────────────────────────────────────────────────────
+    // Uses: shoulder tilt (normalized by shoulder width) + torso lean (normalized by scale)
+    // Score 0-100. Only from actual detected players.
+    const postureScores = [];
+    poses.slice(0, n).forEach(pose => {
+        if(!pose || pose.score < CONFIG.POSE_CONFIDENCE) return;
+        const k = pose.keypoints;
+        const ls=k[KP.L_SHOULDER], rs=k[KP.R_SHOULDER];
+        const lh=k[KP.L_HIP],      rh=k[KP.R_HIP];
+        if(!kpOK(ls)||!kpOK(rs)||!kpOK(lh)||!kpOK(rh)) return;
+
+        const shoulderW = Math.abs(ls.x - rs.x);
+        if(shoulderW < 20) return;  // too small to measure
+
+        // Tilt: how much one shoulder is higher than the other (normalized by shoulder width)
+        const tiltRatio = Math.abs(ls.y - rs.y) / shoulderW; // 0=level, >0.5=very tilted
+        const tiltScore = Math.max(0, 100 - tiltRatio * 150);
+
+        // Forward lean: how much torso midpoint shifts forward from hip midpoint (normalized)
+        const scale2 = bodyScale(k);
+        const torsoMidX = (ls.x + rs.x) / 2;
+        const hipMidX2  = (lh.x + rh.x) / 2;
+        const leanRatio = Math.abs(torsoMidX - hipMidX2) / scale2;
+        const leanScore = Math.max(0, 100 - leanRatio * 120);
+
+        postureScores.push((tiltScore * 0.6 + leanScore * 0.4));
+    });
+    const posture = postureScores.length
+        ? Math.round(postureScores.reduce((a,b)=>a+b,0) / postureScores.length)
+        : null;
+
+    // ── Sync ────────────────────────────────────────────────────────────────
+    // Measures how in-phase players are by comparing PHASE of shoulder Y oscillation.
+    // With only 1 pose → sync is undefined (null).
+    // With 2+ poses: compare normalized shoulder positions relative to each player's own body.
+    let sync = null;
+    const validPoses = poses.slice(0, n).filter(p => p && p.score >= CONFIG.POSE_CONFIDENCE);
+    if(validPoses.length >= 2) {
+        // For each player, compute normalized "hand height" relative to their own hip-shoulder range
+        // This removes the effect of different heights / distances from camera.
+        const normPositions = validPoses.map(pose => {
+            const k = pose.keypoints;
+            const ls=k[KP.L_SHOULDER], rs=k[KP.R_SHOULDER];
+            const lw=k[KP.L_WRIST],    rw=k[KP.R_WRIST];
+            const lh=k[KP.L_HIP],      rh=k[KP.R_HIP];
+            if(!kpOK(ls)||!kpOK(rs)||!kpOK(lw)||!kpOK(rw)||!kpOK(lh)||!kpOK(rh)) return null;
+            const scale2 = bodyScale(k);
+            const shoulderMidY2 = (ls.y+rs.y)/2;
+            const handAvgY = (lw.y+rw.y)/2;
+            // Negative = hands above shoulders, positive = hands below
+            return (handAvgY - shoulderMidY2) / scale2;
+        }).filter(v => v !== null);
+
+        if(normPositions.length >= 2) {
+            const mean = normPositions.reduce((a,b)=>a+b,0) / normPositions.length;
+            const variance = normPositions.reduce((s,v)=>s+Math.pow(v-mean,2),0) / normPositions.length;
+            const stdDev = Math.sqrt(variance);
+            // stdDev of 0 = perfect sync, stdDev of ~0.5+ = very out of sync
+            sync = Math.round(Math.max(0, Math.min(100, 100 - stdDev * 160)));
+        }
+    }
+
+    // ── Team Efficiency ─────────────────────────────────────────────────────
+    // Measures how evenly the team contributes and how close they are to target pace.
+    // Formula: (contribution_balance × 50) + (pace_ratio × 50)
+    // — Contribution balance: 1 - (stdDev of playerReps / max(mean,1))
+    //   Close to 1 = everyone pulling equally. Close to 0 = one person doing all work.
+    // — Pace ratio: (reps_so_far / target) / (elapsed_time / total_time)
+    //   > 1 = ahead of pace, < 1 = behind pace.
+
+    const repsPerPlayer = STATE.playerStates.map(s => s.reps);
+    const meanReps = repsPerPlayer.reduce((a,b)=>a+b,0) / Math.max(1, repsPerPlayer.length);
+    const repVariance = repsPerPlayer.reduce((s,v)=>s+Math.pow(v-meanReps,2),0) / Math.max(1, repsPerPlayer.length);
+    const repStd = Math.sqrt(repVariance);
+    const contributionBalance = meanReps > 0
+        ? Math.max(0, 1 - repStd / Math.max(1, meanReps))
+        : 0;
+
+    const elapsed = (Date.now() - STATE.levelStartTime) / 1000;
+    const totalTime = STATE.currentLevelData.meta.timeLimit;
+    const paceRatio = (STATE.reps / Math.max(1, STATE.targetReps)) / Math.min(1, elapsed / totalTime);
+    const paceScore = Math.max(0, Math.min(100, paceRatio * 80)); // scale to 0-100
+
+    const efficiency = Math.round(contributionBalance * 50 + paceScore * 0.5);
+
+    // ── Rep Rate ─────────────────────────────────────────────────────────────
+    // Reps in last 10 seconds across the whole team
+    const now = Date.now();
+    // Advance bucket every 10s
+    if(now - STATE.analytics.lastBucketTime >= 10000) {
+        STATE.analytics.repBuckets.push(STATE.analytics.currentBucketReps);
+        if(STATE.analytics.repBuckets.length > 6) STATE.analytics.repBuckets.shift();
+        STATE.analytics.currentBucketReps = 0;
+        STATE.analytics.lastBucketTime = now;
+    }
+    const repRate = STATE.analytics.repBuckets.length
+        ? STATE.analytics.repBuckets[STATE.analytics.repBuckets.length - 1]
+        : STATE.analytics.currentBucketReps;
+
+    return { posture, sync, efficiency, contributionBalance, repsPerPlayer, repRate, paceRatio };
+}
+
+// =============================================================================
+// FEEDBACK ENGINE — What to improve
+// =============================================================================
+function generateFeedback(metrics) {
+    const msgs = [];
+    const { posture, sync, efficiency, contributionBalance, repsPerPlayer, paceRatio } = metrics;
+
+    // Posture feedback
+    if(posture !== null) {
+        if(posture >= 85) msgs.push({ cls:'fb-good', icon:'✓', text:'Posture excellent — keep it up' });
+        else if(posture >= 65) msgs.push({ cls:'fb-warn', icon:'!', text:'Posture drifting — straighten shoulders' });
+        else msgs.push({ cls:'fb-bad', icon:'✗', text:'Poor posture — stand tall, align hips and shoulders' });
+    }
+
+    // Sync feedback
+    if(sync !== null && CONFIG.teamSize > 1) {
+        if(sync >= 80) msgs.push({ cls:'fb-good', icon:'✓', text:`Squad sync ${sync}% — great coordination` });
+        else if(sync >= 55) msgs.push({ cls:'fb-warn', icon:'!', text:`Sync at ${sync}% — watch your teammates' pace` });
+        else msgs.push({ cls:'fb-bad', icon:'✗', text:`Out of sync (${sync}%) — match each other's rhythm` });
+    }
+
+    // Contribution balance
+    if(CONFIG.teamSize > 1 && repsPerPlayer.some(r => r > 0)) {
+        const maxReps = Math.max(...repsPerPlayer);
+        const minReps = Math.min(...repsPerPlayer);
+        const gap = maxReps - minReps;
+        if(gap > 3) {
+            // Identify the lagging player
+            const minIdx = repsPerPlayer.indexOf(minReps);
+            const pName = STATE.sessionStats[minIdx]?.name ?? `P${minIdx+1}`;
+            msgs.push({ cls:'fb-warn', icon:'!', text:`${pName} is ${gap} reps behind — encourage them` });
+        } else if(contributionBalance >= 0.85) {
+            msgs.push({ cls:'fb-good', icon:'✓', text:'Balanced contributions from all players' });
+        }
+    }
+
+    // Pace feedback
+    if(paceRatio < 0.6) msgs.push({ cls:'fb-bad', icon:'✗', text:'Behind pace — increase speed to hit target' });
+    else if(paceRatio >= 1.2) msgs.push({ cls:'fb-good', icon:'✓', text:'Ahead of pace — strong team output' });
+
+    return msgs;
+}
+
+// =============================================================================
+// ANALYTICS TICK (every 2s while playing)
+// =============================================================================
+let analyticsTick;
+
+function startAnalyticsTick() {
+    if(analyticsTick) clearInterval(analyticsTick);
+    analyticsTick = setInterval(() => {
+        if(STATE.status !== 'PLAYING') return;
+        const metrics = computeRealMetrics();
+
+        // Store history
+        if(metrics.efficiency !== null) STATE.analytics.efficiencyHistory.push(metrics.efficiency);
+        if(metrics.sync !== null)       STATE.analytics.syncHistory.push(metrics.sync);
+        if(metrics.posture !== null)    STATE.analytics.postureHistory.push(metrics.posture);
+
+        updateAnalyticsDashboard(metrics);
+    }, 2000);
+}
+
+function updateAnalyticsDashboard(metrics) {
+    const { posture, sync, efficiency, repsPerPlayer, repRate } = metrics;
+
+    // ── Team Efficiency ──────────────────────────────────────────────────────
+    const effEl  = document.getElementById('eff-value');
+    const effBar = document.getElementById('eff-bar');
+    if(efficiency !== null) {
+        if(effEl)  effEl.innerText = efficiency + '%';
+        if(effBar) effBar.style.width = efficiency + '%';
+        if(effBar) {
+            effBar.className = 'h-full transition-all duration-700 ' +
+                (efficiency >= 75 ? 'bg-gradient-to-r from-green-500 to-cyan-400'
+                : efficiency >= 45 ? 'bg-gradient-to-r from-yellow-500 to-orange-400'
+                : 'bg-gradient-to-r from-rose-600 to-red-500');
+        }
+    }
+
+    // ── Per-player contribution bars ─────────────────────────────────────────
+    const contribList = document.getElementById('player-contrib-list');
+    if(contribList && repsPerPlayer) {
+        const totalReps = repsPerPlayer.reduce((a,b)=>a+b,0);
+        contribList.innerHTML = '';
+        repsPerPlayer.forEach((reps, i) => {
+            const pct = totalReps > 0 ? Math.round(reps / totalReps * 100) : 0;
+            const name = STATE.sessionStats[i]?.name ?? `P${i+1}`;
+            const colors = ['from-rose-500 to-pink-400','from-blue-500 to-cyan-400','from-green-500 to-emerald-400','from-yellow-500 to-amber-400'];
+            contribList.innerHTML += `
+                <div class="flex items-center gap-2">
+                    <span class="text-[10px] font-sport text-gray-400 w-12 truncate">${name}</span>
+                    <div class="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="h-full bg-gradient-to-r ${colors[i%4]} transition-all duration-500" style="width:${pct}%"></div>
+                    </div>
+                    <span class="text-[10px] font-sport text-white w-8 text-right">${reps}r</span>
+                </div>`;
+        });
+    }
+
+    // ── Rep Rate Chart ────────────────────────────────────────────────────────
+    const rrEl = document.getElementById('rep-rate-value');
+    if(rrEl) rrEl.innerText = repRate;
+    if(repRateChart) {
+        repRateChart.data.labels.push('');
+        repRateChart.data.datasets[0].data.push(repRate);
+        if(repRateChart.data.labels.length > 18) {
+            repRateChart.data.labels.shift();
+            repRateChart.data.datasets[0].data.shift();
+        }
+        repRateChart.update('none');
+    }
+
+    // ── Sync Circle ──────────────────────────────────────────────────────────
+    const circle    = document.getElementById('sync-circle');
+    const syncValEl = document.getElementById('sync-value');
+    if(sync !== null) {
+        const circumference = 163;
+        const offset = circumference - (sync / 100) * circumference;
+        if(circle)    circle.style.strokeDashoffset = offset;
+        if(circle)    circle.style.stroke = sync >= 75 ? '#4ade80' : sync >= 50 ? '#facc15' : '#f87171';
+        if(syncValEl) syncValEl.innerText = sync + '%';
+    } else {
+        if(syncValEl) syncValEl.innerText = 'N/A';
+    }
+
+    // ── Posture ───────────────────────────────────────────────────────────────
+    const postureBar   = document.getElementById('posture-bar');
+    const postureValEl = document.getElementById('posture-value');
+    const postureLabel = document.getElementById('posture-label');
+    if(posture !== null) {
+        if(postureBar)   postureBar.style.width = posture + '%';
+        if(postureBar)   postureBar.className = 'h-full transition-all duration-500 ' +
+            (posture >= 80 ? 'bg-gradient-to-r from-green-400 to-emerald-500'
+            : posture >= 60 ? 'bg-gradient-to-r from-yellow-400 to-orange-400'
+            : 'bg-gradient-to-r from-rose-500 to-red-600');
+        if(postureValEl) postureValEl.innerText = posture + '%';
+        if(postureLabel) postureLabel.innerText =
+            posture >= 80 ? 'Great form' : posture >= 60 ? 'Slight lean' : 'Fix posture!';
+    }
+
+    // ── Live Feedback ─────────────────────────────────────────────────────────
+    const fbList = document.getElementById('feedback-list');
+    if(fbList) {
+        const msgs = generateFeedback(metrics);
+        if(msgs.length === 0) {
+            fbList.innerHTML = '<div class="text-gray-600">Collecting data...</div>';
+        } else {
+            fbList.innerHTML = msgs.map(m =>
+                `<div class="flex items-start gap-2 px-2 py-1.5 rounded border ${m.cls}">
+                    <span class="font-bold">${m.icon}</span>
+                    <span>${m.text}</span>
+                </div>`
+            ).join('');
+        }
+    }
+}
+
+// =============================================================================
+// HUD
+// =============================================================================
+function updateHUD() {
+    const repsEl  = document.getElementById('hud-reps');
+    const targetEl= document.getElementById('hud-target');
+    const fillEl  = document.getElementById('progress-fill');
+    const exEl    = document.getElementById('hud-exercise');
+    if(repsEl)   repsEl.innerText  = STATE.reps;
+    if(targetEl) targetEl.innerText= STATE.targetReps;
+    if(fillEl)   fillEl.style.width= `${Math.min(100,(STATE.reps/STATE.targetReps)*100)}%`;
+    if(exEl && STATE.currentLevelData) exEl.innerText = STATE.currentLevelData.meta.name;
+}
+
+// =============================================================================
+// SUMMARY SCREEN
+// =============================================================================
+function showSummary() {
+    if(analyticsTick) clearInterval(analyticsTick);
+    document.getElementById('game-hud').classList.add('hidden');
+    document.getElementById('summary-screen').classList.remove('hidden');
+
+    // Timeline
+    const tl = document.getElementById('timeline-grid');
+    tl.innerHTML = '';
+    STATE.levelsConfig.forEach(lvl => {
+        const lvlRepsTotal = STATE.sessionStats.reduce((a,p,i) => a + (p.levelReps[STATE.levelsConfig.indexOf(lvl)] ?? 0), 0);
+        tl.innerHTML += `
+            <div class="flex justify-between items-center text-sm border-b border-white/5 pb-3">
+                <div>
+                    <span class="text-xs text-blue-400 font-bold block mb-1">PHASE 0${lvl.id}</span>
+                    <span class="text-white text-lg font-sport tracking-wide">${lvl.meta.name}</span>
+                </div>
+                <div class="text-right">
+                    <div class="text-green-400 font-mono">${lvl.duration.toFixed(1)}s</div>
+                    <div class="text-xs text-gray-500">${lvlRepsTotal} reps</div>
+                </div>
+            </div>`;
+    });
+
+    // Per-player stats
+    const st = document.getElementById('stats-grid');
+    st.innerHTML = '';
+    const totalReps = STATE.sessionStats.reduce((a,p)=>a+p.totalReps,0);
+    STATE.sessionStats.forEach(p => {
+        const pct = totalReps > 0 ? Math.round((p.totalReps / totalReps) * 100) : 0;
+        st.innerHTML += `
+            <div class="glass-panel p-6 rounded-2xl border-l-4 border-rose-500 flex flex-col justify-between">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <div class="text-xs text-rose-400 uppercase tracking-widest font-bold mb-1">UNIT ${p.id}</div>
+                        <div class="text-3xl font-sport text-white">${p.name}</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-4xl font-sport text-green-400">${pct}%</div>
+                        <div class="text-[10px] text-gray-500 uppercase font-bold">CONTRIBUTION</div>
+                    </div>
+                </div>
+                <div class="flex justify-between items-center border-t border-white/10 pt-4">
+                    <div class="text-white font-bold text-xl">${p.totalReps} <span class="text-xs text-gray-500 font-normal">REPS</span></div>
+                </div>
+            </div>`;
+    });
+
+    // Totals
+    document.getElementById('total-score').innerText = STATE.totalTeamReps;
+
+    const avgEff = STATE.analytics.efficiencyHistory.length
+        ? Math.round(STATE.analytics.efficiencyHistory.reduce((a,b)=>a+b,0) / STATE.analytics.efficiencyHistory.length)
+        : 0;
+    document.getElementById('final-efficiency').innerText = avgEff + '%';
+
+    // Summary feedback
+    const avgSync    = STATE.analytics.syncHistory.length    ? Math.round(STATE.analytics.syncHistory.reduce((a,b)=>a+b,0) / STATE.analytics.syncHistory.length) : null;
+    const avgPosture = STATE.analytics.postureHistory.length ? Math.round(STATE.analytics.postureHistory.reduce((a,b)=>a+b,0) / STATE.analytics.postureHistory.length) : null;
+
+    const summaryFb = [];
+    if(avgPosture !== null) {
+        if(avgPosture < 65) summaryFb.push({ cls:'fb-bad', icon:'✗', text:`Average posture was ${avgPosture}% — work on keeping shoulders level and torso upright during all exercises.` });
+        else if(avgPosture < 80) summaryFb.push({ cls:'fb-warn', icon:'!', text:`Posture averaged ${avgPosture}% — minor form breaks detected. Focus on tightening your core.` });
+        else summaryFb.push({ cls:'fb-good', icon:'✓', text:`Excellent posture throughout (${avgPosture}%) — great body control.` });
+    }
+    if(avgSync !== null && CONFIG.teamSize > 1) {
+        if(avgSync < 55) summaryFb.push({ cls:'fb-bad', icon:'✗', text:`Team sync averaged only ${avgSync}% — practice timing movements together, count aloud next session.` });
+        else if(avgSync < 75) summaryFb.push({ cls:'fb-warn', icon:'!', text:`Sync at ${avgSync}% — decent but room to improve. Try matching each other's rhythm more deliberately.` });
+        else summaryFb.push({ cls:'fb-good', icon:'✓', text:`Strong team sync at ${avgSync}% — great coordination.` });
+    }
+    if(avgEff < 50) summaryFb.push({ cls:'fb-bad', icon:'✗', text:`Team efficiency was low (${avgEff}%) — one or more players fell behind. Balance contribution next session.` });
+    else if(avgEff < 75) summaryFb.push({ cls:'fb-warn', icon:'!', text:`Efficiency at ${avgEff}% — slightly uneven contribution or pacing. Push harder in the final phases.` });
+    else summaryFb.push({ cls:'fb-good', icon:'✓', text:`Excellent team efficiency (${avgEff}%) — everyone contributed and paced well.` });
+
+    // Per-player rep gap analysis
+    if(CONFIG.teamSize > 1) {
+        const repsArr = STATE.sessionStats.map(p => p.totalReps);
+        const maxR = Math.max(...repsArr), minR = Math.min(...repsArr);
+        if(maxR - minR > 5) {
+            const minP = STATE.sessionStats[repsArr.indexOf(minR)].name;
+            const maxP = STATE.sessionStats[repsArr.indexOf(maxR)].name;
+            summaryFb.push({ cls:'fb-warn', icon:'!', text:`${minP} was ${maxR-minR} reps behind ${maxP} overall — consider pairing for extra practice.` });
+        }
+    }
+
+    const sfEl = document.getElementById('summary-feedback');
+    if(sfEl) {
+        sfEl.innerHTML = summaryFb.length
+            ? summaryFb.map(m => `<div class="flex items-start gap-2 px-3 py-2 rounded border ${m.cls}"><span class="font-bold mt-0.5">${m.icon}</span><span>${m.text}</span></div>`).join('')
+            : '<div class="text-gray-500">Not enough data collected.</div>';
+    }
+
+    speak('Mission Complete.');
+}
+
+// =============================================================================
+// DEMO ANIMATION (Overlay)
+// =============================================================================
+function startDemoAnimation(type) {
+    if(demoAnimId) cancelAnimationFrame(demoAnimId);
+    const w=240, h=240, cx=w/2;
+    function draw(t) {
+        demoCtx.clearRect(0,0,w,h);
+        demoCtx.strokeStyle='#3b82f6'; demoCtx.lineWidth=5;
+        demoCtx.lineCap='round'; demoCtx.lineJoin='round';
+        const c=(Math.sin(t*0.005)+1)/2;
+        // Head
+        demoCtx.fillStyle='#f43f5e';
+        demoCtx.beginPath(); demoCtx.arc(cx,50,15,0,Math.PI*2); demoCtx.fill();
+        // Torso
+        demoCtx.beginPath(); demoCtx.moveTo(cx,70); demoCtx.lineTo(cx,130); demoCtx.stroke();
+        const L=(x1,y1,x2,y2)=>{demoCtx.beginPath();demoCtx.moveTo(x1,y1);demoCtx.lineTo(x2,y2);demoCtx.stroke();};
+        if(['FINALE_JACKS','JACKS'].includes(type)) {
+            const armSpread=10+c*45, legSpread=10+c*30;
+            L(cx,85, cx-armSpread,85-c*30); L(cx,85, cx+armSpread,85-c*30);
+            L(cx,130,cx-legSpread,195);      L(cx,130,cx+legSpread,195);
+        } else if(type==='SQUATS') {
+            const sq=c*35;
+            L(cx,80+sq,cx-25,115+sq); L(cx,80+sq,cx+25,115+sq);
+            L(cx,130+sq,cx-20+sq*0.3,195); L(cx,130+sq,cx+20-sq*0.3,195);
+        } else if(['BOXING','FINALE_SPRINT'].includes(type)) {
+            const arm=Math.sin(t*0.012)*35;
+            L(cx,85,cx-40+arm,110); L(cx,85,cx+40-arm,110);
+            L(cx,130,cx-15,195+Math.sin(t*0.015)*15); L(cx,130,cx+15,195-Math.sin(t*0.015)*15);
+        } else {
+            const s=Math.sin(t*0.01)*25;
+            L(cx,85,cx-30,115+s); L(cx,85,cx+30,115-s);
+            L(cx,130,cx-15,195+s*0.5); L(cx,130,cx+15,195-s*0.5);
+        }
+        demoAnimId = requestAnimationFrame(tt=>draw(tt));
+    }
+    draw(0);
+}
+
+// =============================================================================
+// SKELETON DRAWING
+// =============================================================================
+function drawSkeleton(poses) {
+    const colors=['#f43f5e','#3b82f6','#10b981','#f59e0b'];
+    const CONNECTIONS=[[5,7],[7,9],[6,8],[8,10],[5,6],[5,11],[6,12],[11,13],[13,15],[12,14],[14,16]];
+    poses.forEach((pose, i) => {
+        if(pose.score < CONFIG.POSE_CONFIDENCE) return;
+        const color = colors[i%4];
+        const k = pose.keypoints;
+        ctx.strokeStyle=color; ctx.lineWidth=4;
+        CONNECTIONS.forEach(([a,b]) => {
+            if(kpOK(k[a])&&kpOK(k[b])) {
+                ctx.beginPath(); ctx.moveTo(k[a].x,k[a].y); ctx.lineTo(k[b].x,k[b].y); ctx.stroke();
+            }
+        });
+        // Name label (un-mirror it)
+        if(kpOK(k[KP.NOSE])) {
+            ctx.save();
+            ctx.translate(k[KP.NOSE].x, k[KP.NOSE].y - 55);
+            ctx.scale(-1,1);
+            const text = STATE.sessionStats[i]?.name ?? `P${i+1}`;
+            const repText = ` • ${STATE.playerStates[i]?.reps ?? 0}r`;
+            ctx.font='bold 15px Barlow';
+            const tw = ctx.measureText(text+repText).width+16;
+            ctx.fillStyle='rgba(15,23,42,0.9)';
+            ctx.fillRect(-tw/2,-18,tw,26);
+            ctx.fillStyle=color; ctx.textAlign='center';
+            ctx.fillText(text+repText,0,0);
+            ctx.restore();
+        }
+    });
+}
+
+// =============================================================================
+// CHART INIT
+// =============================================================================
+function initAnalyticsCharts() {
+    const canvas2 = document.getElementById('repRateChart');
+    if(!canvas2) return;
+    const ctx3 = canvas2.getContext('2d');
+    repRateChart = new Chart(ctx3, {
+        type:'line',
+        data:{
+            labels:[],
+            datasets:[{
+                label:'Reps/10s',
+                data:[],
+                borderColor:'#f43f5e',
+                backgroundColor:'rgba(244,63,94,0.12)',
+                fill:true, tension:0.4, borderWidth:2.5, pointRadius:0
+            }]
+        },
+        options:{
+            responsive:true,
+            animation:false,
+            plugins:{legend:{display:false}},
+            scales:{
+                x:{display:false},
+                y:{
+                    min:0,
+                    ticks:{color:'#94a3b8',stepSize:1},
+                    grid:{color:'rgba(255,255,255,0.04)'}
+                }
+            }
+        }
+    });
+}
+
+// =============================================================================
+// AUDIO
+// =============================================================================
+function playSound(type) {
+    if(!audioCtx) return;
+    const o=audioCtx.createOscillator(), g=audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    if(type==='beep') {
+        o.frequency.setValueAtTime(620,audioCtx.currentTime);
+        o.frequency.exponentialRampToValueAtTime(1100,audioCtx.currentTime+0.08);
+        g.gain.setValueAtTime(0.08,audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.1);
+        o.start(); o.stop(audioCtx.currentTime+0.1);
+    } else {
+        o.type='triangle';
+        o.frequency.setValueAtTime(160,audioCtx.currentTime);
+        g.gain.setValueAtTime(0.08,audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001,audioCtx.currentTime+0.5);
+        o.start(); o.stop(audioCtx.currentTime+0.5);
+    }
+}
+
+function speak(text) {
+    if(!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text);
+    u.rate=1.1;
+    window.speechSynthesis.speak(u);
+}
+</script>
+</body>
+</html>

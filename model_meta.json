@@ -1,0 +1,8 @@
+{
+  "mae": 3.287,
+  "rmse": 4.07,
+  "r2": 0.918,
+  "rows": 2600,
+  "source": "synthetic_demo_data",
+  "last_test_rmse": 4.084
+}
